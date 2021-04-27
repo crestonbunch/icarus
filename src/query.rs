@@ -383,6 +383,7 @@ pub struct SolrQueryRequest<'a> {
 pub struct SolrQueryResponseHeader {
     status: usize,
     zk_connected: bool,
+    #[serde(rename = "QTime")]
     q_time: usize,
 }
 
@@ -505,6 +506,8 @@ impl<'a> SolrQueryRequest<'a> {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     #[test]
@@ -709,5 +712,41 @@ mod tests {
         let actual = serde_json::to_string(&SolrQueryRequest::new(q)).unwrap();
         let expect = "{\"params\":{\"defType\":\"lucene\",\"q\":\"\",\"sow\":true}}";
         assert_eq!(expect, actual);
+    }
+
+    #[test]
+    fn test_response_deserialize() {
+        #[derive(Debug, PartialEq, Deserialize)]
+        struct FakeDoc {
+            field: String,
+        }
+
+        let fake_response = json!({
+            "responseHeader": {
+                "zkConnected": true,
+                "status": 0,
+                "QTime": 3,
+                "params": {
+                    "q": "abcdef",
+                },
+            },
+            "response": {
+                "numFound": 1,
+                "start": 0,
+                "maxScore": 1.0,
+                "numFoundExact": true,
+                "docs": [
+                    {
+                        "field": "123",
+                        "score": 1.0,
+                    }
+                ]
+            }
+        })
+        .to_string();
+
+        let actual: SolrQueryResult<FakeDoc> = serde_json::from_str(&fake_response).unwrap();
+        assert_eq!(3, actual.response_header.q_time);
+        assert_eq!(1, actual.response.num_found);
     }
 }
