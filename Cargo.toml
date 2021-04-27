@@ -1,0 +1,15 @@
+[package]
+name = "icarus"
+version = "0.1.0"
+authors = ["Creston Bunch <rust@bunch.im>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+reqwest = { version = "0.11", features = ["json", "gzip", "stream"] }
+serde = "1.0"
+serde_json = "1.0"
+serde_with = "1.8"
+thiserror = "1.0"
+url = "2.2"
