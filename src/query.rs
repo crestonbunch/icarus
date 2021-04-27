@@ -213,6 +213,7 @@ pub struct DisMaxQueryParams<'a> {
     qs: Option<usize>,
     tie: Option<f32>,
 
+    // Unimplemented
     #[serde(skip_serializing_if = "Vec::is_empty")]
     bq: Vec<&'a str>,
     bf: Option<&'a str>,
@@ -349,25 +350,32 @@ enum Pagination<'a> {
     },
 }
 
-/// Create a request to query Solr for documents.
 #[serde_with::skip_serializing_none]
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct SolrQueryRequest<'a> {
+struct SolrQueryParams<'a> {
     #[serde(flatten)]
-    query: Query<'a>,
+    q: Query<'a>,
     #[serde(with = "serde_with::rust::StringWithSeparator::<CommaSeparator>")]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     sort: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    filter: Vec<&'a str>,
+    fq: Vec<&'a str>,
     #[serde(with = "serde_with::rust::StringWithSeparator::<CommaSeparator>")]
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    fields: Vec<&'a str>,
+    fl: Vec<&'a str>,
     #[serde(flatten)]
     pagination: Option<Pagination<'a>>,
     rows: Option<usize>,
     time_allowed: Option<u128>,
+}
+
+/// Create a request to query Solr for documents.
+#[derive(Debug, Serialize, Clone)]
+pub struct SolrQueryRequest<'a> {
+    /// This wraps the JSON parameters a single `params` field. which is
+    /// necessary to use the url query parameter names in the JSON API.
+    params: SolrQueryParams<'a>,
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
@@ -401,13 +409,15 @@ impl<'a> SolrQueryRequest<'a> {
     /// syntax used in the input string is respected in the response query.
     pub fn new(query: Query<'a>) -> Self {
         SolrQueryRequest {
-            query,
-            sort: vec![],
-            filter: vec![],
-            fields: vec![],
-            pagination: None,
-            rows: None,
-            time_allowed: None,
+            params: SolrQueryParams {
+                q: query,
+                sort: vec![],
+                fq: vec![],
+                fl: vec![],
+                pagination: None,
+                rows: None,
+                time_allowed: None,
+            },
         }
     }
 
@@ -416,7 +426,7 @@ impl<'a> SolrQueryRequest<'a> {
     /// fields.
     pub fn sort_asc(mut self, field: &'a str) -> Self {
         let sort = format!("{} asc", field);
-        self.sort.push(sort);
+        self.params.sort.push(sort);
         self
     }
 
@@ -425,15 +435,15 @@ impl<'a> SolrQueryRequest<'a> {
     /// fields.
     pub fn sort_desc(mut self, field: &'a str) -> Self {
         let sort = format!("{} desc", field);
-        self.sort.push(sort);
+        self.params.sort.push(sort);
         self
     }
 
     /// Request only rows starting from the given offset in the response. E.g.
     /// for pagination. Multiple calls to start() will overwrite the last
     /// value set. It will also replace any early calls to cursor_mark().
-    pub fn start(mut self, offset: usize) -> Self {
-        self.pagination = Some(Pagination::Offset { start: offset });
+    pub fn offset(mut self, offset: usize) -> Self {
+        self.params.pagination = Some(Pagination::Offset { start: offset });
         self
     }
 
@@ -441,15 +451,15 @@ impl<'a> SolrQueryRequest<'a> {
     /// pagination. Multiple calls to cursor_mark() will overwrite the last
     /// value set. It will also replace any early calls to start().
     pub fn cursor_mark(mut self, mark: &'a str) -> Self {
-        self.pagination = Some(Pagination::Cursor { cursor_mark: mark });
+        self.params.pagination = Some(Pagination::Cursor { cursor_mark: mark });
         self
     }
 
     /// Request only the given number of rows in the response. E.g. for
     /// pagination. Multiple calls to rows() will overwrite the last
     /// value set.
-    pub fn rows(mut self, rows: usize) -> Self {
-        self.rows = Some(rows);
+    pub fn limit(mut self, rows: usize) -> Self {
+        self.params.rows = Some(rows);
         self
     }
 
@@ -460,7 +470,7 @@ impl<'a> SolrQueryRequest<'a> {
     /// When a later query uses the same filter, there’s a cache hit, and filter
     /// results are returned quickly from the cache.
     pub fn add_filter(mut self, filter: &'a str) -> Self {
-        self.filter.push(filter);
+        self.params.fq.push(filter);
         self
     }
 
@@ -477,7 +487,7 @@ impl<'a> SolrQueryRequest<'a> {
     /// enabled). You can also add pseudo-fields, functions and transformers to
     /// the field list request.
     pub fn add_field(mut self, field: &'a str) -> Self {
-        self.fields.push(field);
+        self.params.fl.push(field);
         self
     }
 
@@ -488,7 +498,7 @@ impl<'a> SolrQueryRequest<'a> {
     /// entire result set. In case of expiration, if omitHeader isn’t set to
     /// true the response header contains a special flag called partialResults.
     pub fn time_allowed(mut self, time_allowed: Duration) -> Self {
-        self.time_allowed = Some(time_allowed.as_millis());
+        self.params.time_allowed = Some(time_allowed.as_millis());
         self
     }
 }
@@ -501,7 +511,7 @@ mod tests {
     fn test_simple_query() {
         let q = Query::DisMax(DisMaxQueryParams::new("test"));
         let actual = serde_json::to_string(&SolrQueryRequest::new(q)).unwrap();
-        let expect = "{\"defType\":\"dismax\",\"q\":\"test\"}";
+        let expect = "{\"params\":{\"defType\":\"dismax\",\"q\":\"test\"}}";
         assert_eq!(expect, actual);
     }
 
@@ -511,15 +521,16 @@ mod tests {
         let actual =
             serde_json::to_string(&SolrQueryRequest::new(q).sort_asc("one").sort_desc("two"))
                 .unwrap();
-        let expect = "{\"defType\":\"lucene\",\"q\":\"test\",\"sort\":\"one asc,two desc\"}";
+        let expect =
+            "{\"params\":{\"defType\":\"lucene\",\"q\":\"test\",\"sort\":\"one asc,two desc\"}}";
         assert_eq!(expect, actual);
     }
 
     #[test]
     fn test_start() {
         let q = Query::Lucene(LuceneQueryParams::new("test"));
-        let actual = serde_json::to_string(&SolrQueryRequest::new(q).start(5).rows(10)).unwrap();
-        let expect = "{\"defType\":\"lucene\",\"q\":\"test\",\"start\":5,\"rows\":10}";
+        let actual = serde_json::to_string(&SolrQueryRequest::new(q).offset(5).limit(10)).unwrap();
+        let expect = "{\"params\":{\"defType\":\"lucene\",\"q\":\"test\",\"start\":5,\"rows\":10}}";
         assert_eq!(expect, actual);
     }
 
@@ -527,8 +538,8 @@ mod tests {
     fn test_cursor_mark() {
         let q = Query::Lucene(LuceneQueryParams::new("test"));
         let actual =
-            serde_json::to_string(&SolrQueryRequest::new(q).cursor_mark("abc").rows(10)).unwrap();
-        let expect = "{\"defType\":\"lucene\",\"q\":\"test\",\"cursorMark\":\"abc\",\"rows\":10}";
+            serde_json::to_string(&SolrQueryRequest::new(q).cursor_mark("abc").limit(10)).unwrap();
+        let expect = "{\"params\":{\"defType\":\"lucene\",\"q\":\"test\",\"cursorMark\":\"abc\",\"rows\":10}}";
         assert_eq!(expect, actual);
     }
 
@@ -541,7 +552,7 @@ mod tests {
                 .add_filter("section:0"),
         )
         .unwrap();
-        let expect = "{\"defType\":\"lucene\",\"q\":\"test\",\"filter\":[\"popularity:[10 TO *]\",\"section:0\"]}";
+        let expect = "{\"params\":{\"defType\":\"lucene\",\"q\":\"test\",\"fq\":[\"popularity:[10 TO *]\",\"section:0\"]}}";
         assert_eq!(expect, actual);
     }
 
@@ -555,7 +566,8 @@ mod tests {
                 .add_field("score"),
         )
         .unwrap();
-        let expect = "{\"defType\":\"lucene\",\"q\":\"test\",\"fields\":\"id,name,score\"}";
+        let expect =
+            "{\"params\":{\"defType\":\"lucene\",\"q\":\"test\",\"fl\":\"id,name,score\"}}";
         assert_eq!(expect, actual);
     }
 
@@ -565,7 +577,7 @@ mod tests {
         let actual =
             serde_json::to_string(&SolrQueryRequest::new(q).time_allowed(Duration::from_secs(1)))
                 .unwrap();
-        let expect = "{\"defType\":\"lucene\",\"q\":\"test\",\"timeAllowed\":1000}";
+        let expect = "{\"params\":{\"defType\":\"lucene\",\"q\":\"test\",\"timeAllowed\":1000}}";
         assert_eq!(expect, actual);
     }
 
@@ -573,7 +585,7 @@ mod tests {
     fn test_dismax_q_alt() {
         let q = Query::DisMax(DisMaxQueryParams::new("").q_alt("test"));
         let actual = serde_json::to_string(&SolrQueryRequest::new(q)).unwrap();
-        let expect = "{\"defType\":\"dismax\",\"q\":\"\",\"q.alt\":\"test\"}";
+        let expect = "{\"params\":{\"defType\":\"dismax\",\"q\":\"\",\"q.alt\":\"test\"}}";
         assert_eq!(expect, actual);
     }
 
@@ -587,7 +599,7 @@ mod tests {
         );
         let req = SolrQueryRequest::new(q);
         let actual = serde_json::to_string(&req).unwrap();
-        let expect = "{\"defType\":\"dismax\",\"q\":\"test\",\"qf\":\"fieldOne^2.3 fieldTwo fieldThree^0.4\"}";
+        let expect = "{\"params\":{\"defType\":\"dismax\",\"q\":\"test\",\"qf\":\"fieldOne^2.3 fieldTwo fieldThree^0.4\"}}";
         assert_eq!(expect, actual);
     }
 
@@ -600,7 +612,7 @@ mod tests {
         );
         let req = SolrQueryRequest::new(q);
         let actual = serde_json::to_string(&req).unwrap();
-        let expect = "{\"defType\":\"dismax\",\"q\":\"test\",\"mm\":\"3\"}";
+        let expect = "{\"params\":{\"defType\":\"dismax\",\"q\":\"test\",\"mm\":\"3\"}}";
         assert_eq!(expect, actual);
 
         let q = Query::DisMax(
@@ -610,7 +622,7 @@ mod tests {
         );
         let req = SolrQueryRequest::new(q);
         let actual = serde_json::to_string(&req).unwrap();
-        let expect = "{\"defType\":\"dismax\",\"q\":\"test\",\"mm\":\"-2\"}";
+        let expect = "{\"params\":{\"defType\":\"dismax\",\"q\":\"test\",\"mm\":\"-2\"}}";
         assert_eq!(expect, actual);
 
         let q = Query::DisMax(
@@ -620,7 +632,7 @@ mod tests {
         );
         let req = SolrQueryRequest::new(q);
         let actual = serde_json::to_string(&req).unwrap();
-        let expect = "{\"defType\":\"dismax\",\"q\":\"test\",\"mm\":\"75%\"}";
+        let expect = "{\"params\":{\"defType\":\"dismax\",\"q\":\"test\",\"mm\":\"75%\"}}";
         assert_eq!(expect, actual);
 
         let q = Query::DisMax(
@@ -630,7 +642,7 @@ mod tests {
         );
         let req = SolrQueryRequest::new(q);
         let actual = serde_json::to_string(&req).unwrap();
-        let expect = "{\"defType\":\"dismax\",\"q\":\"test\",\"mm\":\"-25%\"}";
+        let expect = "{\"params\":{\"defType\":\"dismax\",\"q\":\"test\",\"mm\":\"-25%\"}}";
         assert_eq!(expect, actual);
 
         let q = Query::DisMax(
@@ -640,7 +652,7 @@ mod tests {
         );
         let req = SolrQueryRequest::new(q);
         let actual = serde_json::to_string(&req).unwrap();
-        let expect = "{\"defType\":\"dismax\",\"q\":\"test\",\"mm\":\"3<90%\"}";
+        let expect = "{\"params\":{\"defType\":\"dismax\",\"q\":\"test\",\"mm\":\"3<90%\"}}";
         assert_eq!(expect, actual);
 
         let q = Query::DisMax(
@@ -651,7 +663,7 @@ mod tests {
         );
         let req = SolrQueryRequest::new(q);
         let actual = serde_json::to_string(&req).unwrap();
-        let expect = "{\"defType\":\"dismax\",\"q\":\"test\",\"mm\":\"2<-25% 9<-3\"}";
+        let expect = "{\"params\":{\"defType\":\"dismax\",\"q\":\"test\",\"mm\":\"2<-25% 9<-3\"}}";
         assert_eq!(expect, actual);
     }
 
@@ -661,7 +673,7 @@ mod tests {
             Query::DisMax(DisMaxQueryParams::new("test").add_pf(DisMaxFieldBoost::new("category")));
         let req = SolrQueryRequest::new(q);
         let actual = serde_json::to_string(&req).unwrap();
-        let expect = "{\"defType\":\"dismax\",\"q\":\"test\",\"pf\":\"category\"}";
+        let expect = "{\"params\":{\"defType\":\"dismax\",\"q\":\"test\",\"pf\":\"category\"}}";
         assert_eq!(expect, actual);
     }
 
@@ -670,7 +682,8 @@ mod tests {
         let q = Query::DisMax(DisMaxQueryParams::new("test").ps(1).qs(2).tie(0.1));
         let req = SolrQueryRequest::new(q);
         let actual = serde_json::to_string(&req).unwrap();
-        let expect = "{\"defType\":\"dismax\",\"q\":\"test\",\"ps\":1,\"qs\":2,\"tie\":0.1}";
+        let expect =
+            "{\"params\":{\"defType\":\"dismax\",\"q\":\"test\",\"ps\":1,\"qs\":2,\"tie\":0.1}}";
         assert_eq!(expect, actual);
     }
 
@@ -678,7 +691,7 @@ mod tests {
     fn test_lucene_q_op() {
         let q = Query::Lucene(LuceneQueryParams::new("").q_op(LuceneQueryOp::And));
         let actual = serde_json::to_string(&SolrQueryRequest::new(q)).unwrap();
-        let expect = "{\"defType\":\"lucene\",\"q\":\"\",\"q.op\":\"AND\"}";
+        let expect = "{\"params\":{\"defType\":\"lucene\",\"q\":\"\",\"q.op\":\"AND\"}}";
         assert_eq!(expect, actual);
     }
 
@@ -686,7 +699,7 @@ mod tests {
     fn test_lucene_df() {
         let q = Query::Lucene(LuceneQueryParams::new("").df("category"));
         let actual = serde_json::to_string(&SolrQueryRequest::new(q)).unwrap();
-        let expect = "{\"defType\":\"lucene\",\"q\":\"\",\"df\":\"category\"}";
+        let expect = "{\"params\":{\"defType\":\"lucene\",\"q\":\"\",\"df\":\"category\"}}";
         assert_eq!(expect, actual);
     }
 
@@ -694,7 +707,7 @@ mod tests {
     fn test_lucene_sow() {
         let q = Query::Lucene(LuceneQueryParams::new("").sow(true));
         let actual = serde_json::to_string(&SolrQueryRequest::new(q)).unwrap();
-        let expect = "{\"defType\":\"lucene\",\"q\":\"\",\"sow\":true}";
+        let expect = "{\"params\":{\"defType\":\"lucene\",\"q\":\"\",\"sow\":true}}";
         assert_eq!(expect, actual);
     }
 }
